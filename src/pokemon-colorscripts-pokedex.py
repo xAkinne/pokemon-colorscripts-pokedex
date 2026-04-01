@@ -35,6 +35,26 @@ def setup(): # init dirs
         with open(CONF_FILE, 'w') as f: json.dump(DEF_CONF, f, indent=4)
     if not DB_FILE.exists(): # new db
         with open(DB_FILE, 'w') as f: json.dump({"captured": {}}, f, indent=4)
+    else: migrate_db() # check old data
+
+def migrate_db(): # update structure to v3 (shiny per form)
+    try:
+        with open(DB_FILE, 'r') as f: db = json.load(f)
+    except: return
+    changed = False
+    for pid, entry in db.get("captured", {}).items():
+        if isinstance(entry.get("forms"), list): # old list format
+            old_list = entry["forms"]
+            new_forms = {}
+            has_global_shiny = "shiny" in old_list
+            for f in old_list:
+                if f == "shiny": continue
+                new_forms[f] = {"normal": True, "shiny": has_global_shiny if f == "base" else False}
+            if "base" not in new_forms and "shiny" in old_list:
+                new_forms["base"] = {"normal": False, "shiny": True}
+            entry["forms"] = new_forms
+            changed = True
+    if changed: put_db(db)
 
 def get_conf(): setup(); return json.load(open(CONF_FILE)) # load conf
 def get_db(): setup(); return json.load(open(DB_FILE)) # load db
@@ -46,105 +66,108 @@ def list_pokes(): # get all names
     try: return [l.strip() for l in subprocess.check_output(["pokemon-colorscripts", "-l"], text=True).split('\n') if l.strip()]
     except: return [] # fail safe
 
-def get_sprite(name, big=False, shiny=False): # fetch sprite
-    cmd = ["pokemon-colorscripts", "-n", name, "--no-title"] # basic cmd
-    if big: cmd.append("-b") # large
-    if shiny: cmd.append("-s") # shiny
+def get_sprite(name, big=False, shiny=False, form=None): # fetch sprite
+    cmd = ["pokemon-colorscripts", "-n", name, "--no-title"]
+    if big: cmd.append("-b")
+    if shiny: cmd.append("-s")
+    if form and form not in ["base", "shiny"]: cmd.extend(["-f", form])
     try: return subprocess.check_output(cmd, text=True) # run
     except: return "" # error
 
+def get_available_forms(name): # validate forms
+    try:
+        res = subprocess.run(["pokemon-colorscripts", "-n", name, "-f", "INVALID"], capture_output=True, text=True)
+        out = res.stdout + res.stderr
+        if "Available alternate forms are" in out:
+            return [line.strip("- ").strip() for line in out.split("\n") if line.strip().startswith("- ")]
+    except: pass
+    return []
+
 def shadow(ansi): # make silhouette
-    plain = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])').sub('', ansi) # remove color
-    return '\n'.join([l if l.strip() else l for l in plain.split('\n')]) # raw blocks
+    plain = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])').sub('', ansi)
+    return '\n'.join([l if l.strip() else l for l in plain.split('\n')])
 
 def make_bar(cur, tot, width=60): # custom bar
-    if tot == 0: return "|" + "░" * width + "|" # empty
-    done = int((cur / tot) * width) # filled part
-    return "|" + "█" * done + "░" * (width - done) + "|" # bar string
+    if tot == 0: return "|" + "░" * width + "|"
+    done = int((cur / tot) * width)
+    return "|" + "█" * done + "░" * (width - done) + "|"
 
 def get_now_str(): # formatted date
-    try: locale.setlocale(locale.LC_TIME, "") # use user locale
+    try: locale.setlocale(locale.LC_TIME, "")
     except: pass
-    return datetime.now().strftime("%x") + "r" # locale date + r
+    return datetime.now().strftime("%x") + "r"
 
 # # TUI COMPONENTS
 class PokeItem(ListItem): # list entry
-    def __init__(self, idx, name, known): # init item
+    def __init__(self, idx, name, known): # init
         super().__init__()
-        self.p_idx, self.p_name, self.p_known = idx, name, known # store data
-    def compose(self) -> ComposeResult: yield Static(f" {self.p_idx+1:04d}: {self.p_name if self.p_known else '???'}") # display
+        self.p_idx, self.p_name, self.p_known = idx, name, known
+    def compose(self) -> ComposeResult: yield Static(f" {self.p_idx+1:04d}: {self.p_name if self.p_known else '???'}")
 
 class DetailScr(Screen): # info screen
-    BINDINGS = [
-        ("escape", "back", "Back"),
-        ("left", "prev", "Prev"),
-        ("right", "next", "Next")
-    ]
-    def __init__(self, idx, pokes, db, map_data): # init details
+    BINDINGS = [("escape", "back", "Back"), ("left", "prev", "Prev"), ("right", "next", "Next")]
+    def __init__(self, idx, pokes, db, map_data): # init
         super().__init__()
-        self.p_idx, self.p_pokes, self.p_db, self.p_map = idx, pokes, db, map_data # data
-        self.update_data() # init state
+        self.p_idx, self.p_pokes, self.p_db, self.p_map = idx, pokes, db, map_data
+        self.update_data()
 
     def update_data(self): # refresh state
-        self.p_name = self.p_pokes[self.p_idx] # current name
-        self.p_pid = self.p_idx + 1 # current id
-        entry = self.p_db["captured"].get(str(self.p_pid), {}) # get entry
-        self.p_known = str(self.p_pid) in self.p_db["captured"] # check capture
-        self.p_shiny = entry.get("shiny", False) # check shiny
-        self.p_encounters = entry.get("encounters", 0 if not self.p_known else 1) # count
-        self.p_first_date = entry.get("first_date", "00/00/0000r") # date
+        self.p_base_name = self.p_pokes[self.p_idx]
+        self.p_pid = self.p_idx + 1
+        entry = self.p_db["captured"].get(str(self.p_pid), {})
+        self.p_known = str(self.p_pid) in self.p_db["captured"]
+        self.p_caught_forms = entry.get("forms", {}) # Dict format
+        self.p_encounters = entry.get("encounters", 0)
+        self.p_first_date = entry.get("first_date", "00/00/0000r")
 
-    def compose(self) -> ComposeResult: # build ui
-        with ScrollableContainer(id="det-cont"): # scrollable
-            yield Vertical(id="det-inner") # wrapper
-        with Horizontal(id="det-nav"): # nav row
+    def compose(self) -> ComposeResult: # build
+        with ScrollableContainer(id="det-cont"):
+            yield Vertical(id="det-inner")
+        with Horizontal(id="det-nav"):
             yield Button("< Prev", id="btn-prev")
             yield Button("Bulbapedia", id="bulb-btn")
             yield Button("Next >", id="btn-next")
-        with Horizontal(id="back-row"): # centered back row
+        with Horizontal(id="back-row"):
             yield Button("Back (ESC)", id="back-btn")
 
-    def on_mount(self): self.refresh_view() # first load
+    def on_mount(self): self.refresh_view()
 
     def refresh_view(self): # update content
         cont = self.query_one("#det-inner", Vertical)
-        for child in list(cont.children): child.remove() # manual clear
+        for child in list(cont.children): child.remove()
         
-        if not self.p_known: # unknown
-            v = Vertical(
-                Static("Base Form", classes="form-lbl"),
-                Static(shadow(get_sprite(self.p_name, True)), classes="sprite"),
-                classes="sprite-col"
-            )
+        if not self.p_known:
+            v = Vertical(Static("Base Form", classes="form-lbl"), Static(shadow(get_sprite(self.p_base_name, True)), classes="sprite"), classes="sprite-col")
             cont.mount(Horizontal(v, classes="sprite-row"))
-            cont.mount(Static("", classes="spacer")) # spacer
+            cont.mount(Static("", classes="spacer"))
             cont.mount(Static("???", classes="name-big"))
             cont.mount(Static(f"ID: {self.p_pid:04d} | Encountered: {self.p_first_date} | Encounters: {self.p_encounters}", classes="info-stats"))
-        else: # discovered
-            cols = [] # children list
-            cols.append(Vertical(
-                Static("Base Form", classes="form-lbl"),
-                Static(Text.from_ansi(get_sprite(self.p_name, True)), classes="sprite"),
-                classes="sprite-col"
-            ))
-            if self.p_shiny: # add shiny
-                cols.append(Vertical(
-                    Static("Shiny Form", classes="form-lbl"),
-                    Static(Text.from_ansi(get_sprite(self.p_name, True, True)), classes="sprite"),
-                    classes="sprite-col"
-                ))
+        else:
+            # Sort forms: base first, then others
+            sorted_forms = sorted(self.p_caught_forms.keys(), key=lambda x: (x != "base", x))
             
-            cont.mount(Horizontal(*cols, classes="sprite-row"))
-            cont.mount(Static("", classes="spacer")) # spacer
-            m_name = self.p_map.get(self.p_name, self.p_name.capitalize()) # name
+            for f in sorted_forms:
+                status = self.p_caught_forms[f]
+                cols = []
+                f_arg = None if f == "base" else f
+                title = f.replace("-", " ").capitalize() if f != "base" else "Base"
+                
+                if status.get("normal"):
+                    cols.append(Vertical(Static(f"{title}", classes="form-lbl"), Static(Text.from_ansi(get_sprite(self.p_base_name, True, shiny=False, form=f_arg)), classes="sprite"), classes="sprite-col"))
+                if status.get("shiny"):
+                    cols.append(Vertical(Static(f"{title} Shiny", classes="form-lbl"), Static(Text.from_ansi(get_sprite(self.p_base_name, True, shiny=True, form=f_arg)), classes="sprite"), classes="sprite-col"))
+                
+                if cols:
+                    cont.mount(Horizontal(*cols, classes="sprite-row"))
+            
+            cont.mount(Static("", classes="spacer"))
+            m_name = self.p_map.get(self.p_base_name, self.p_base_name.capitalize())
             cont.mount(Static(m_name, classes="name-big"))
             cont.mount(Static(f"ID: {self.p_pid:04d} | Encountered: {self.p_first_date} | Encounters: {self.p_encounters}", classes="info-stats"))
 
-    def action_back(self): self.app.pop_screen() # close
-    def action_prev(self): # go prev
-        self.p_idx = (self.p_idx - 1) % len(self.p_pokes); self.update_data(); self.refresh_view()
-    def action_next(self): # go next
-        self.p_idx = (self.p_idx + 1) % len(self.p_pokes); self.update_data(); self.refresh_view()
+    def action_back(self): self.app.pop_screen()
+    def action_prev(self): self.p_idx = (self.p_idx - 1) % len(self.p_pokes); self.update_data(); self.refresh_view()
+    def action_next(self): self.p_idx = (self.p_idx + 1) % len(self.p_pokes); self.update_data(); self.refresh_view()
 
     @on(Button.Pressed, "#back-btn")
     def on_back_click(self): self.action_back()
@@ -153,8 +176,8 @@ class DetailScr(Screen): # info screen
     @on(Button.Pressed, "#btn-next")
     def on_next_click(self): self.action_next()
     @on(Button.Pressed, "#bulb-btn")
-    def open_link(self): # open web
-        n = self.p_map.get(self.p_name, self.p_name.capitalize()).replace(" ", "_")
+    def open_link(self):
+        n = self.p_map.get(self.p_base_name, self.p_base_name.capitalize()).replace(" ", "_")
         webbrowser.open(f"https://bulbapedia.bulbagarden.net/wiki/{n}_(Pok%C3%A9mon)")
 
 class Pokedex(App): # main app
@@ -172,10 +195,10 @@ class Pokedex(App): # main app
     .spacer { height: 1; width: 100%; }
     .form-lbl { text-align: center; width: 100%; text-style: bold; color: white; margin-bottom: 1; }
     .sprite { border: heavy white; padding: 1; width: auto; height: auto; background: #1e1e1e; align: center middle; }
-    .sprite-row { height: auto; align: center middle; width: 100%; background: transparent; }
-    .sprite-col { width: auto; align: center middle; height: auto; margin: 0 2; }
-    #det-cont { height: 1fr; width: 100%; background: #121212; align: center middle; }
-    #det-inner { align: center middle; width: 100%; height: auto; }
+    .sprite-row { height: auto; align: center middle; width: 100%; background: transparent; margin-bottom: 1; }
+    .sprite-col { width: auto; align: center middle; height: auto; margin: 1 2; }
+    #det-cont { height: 1fr; width: 100%; background: #121212; }
+    #det-inner { align: center middle; width: 100%; height: auto; padding: 1 0; }
     #det-nav { height: 3; align: center middle; width: 100%; margin-top: 1; }
     #det-nav Button { margin: 0 1; border: heavy white; background: #1e1e1e; color: white; }
     #back-row { height: 3; align: center middle; width: 100%; margin-bottom: 3; margin-top: 2; }
@@ -225,9 +248,7 @@ class Pokedex(App): # main app
     @on(Input.Changed, "#search")
     def on_find(self, e): self.update_list(e.value)
     @on(ListView.Selected)
-    def on_pick(self, e): 
-        self.db = get_db() # Refresh db before viewing
-        self.push_screen(DetailScr(e.item.p_idx, self.pokes, self.db, self.map))
+    def on_pick(self, e): self.db = get_db(); self.push_screen(DetailScr(e.item.p_idx, self.pokes, self.db, self.map))
     @on(Button.Pressed, "#btn-find")
     def action_find(self): self.query_one("#search").focus()
     @on(Button.Pressed, "#btn-sort")
@@ -241,19 +262,27 @@ class Pokedex(App): # main app
 def catch_one(): # random
     c, db, p = get_conf(), get_db(), list_pokes()
     if not p: return
-    n = random.choice(p); pid = str(p.index(n) + 1)
+    out = subprocess.check_output(["pokemon-colorscripts", "--random"], text=True).strip().split('\n')
+    full_name = out[0].strip()
+    print('\n'.join(out[1:]))
+    base_name, form_name = full_name, "base"
+    for pn in sorted(p, key=len, reverse=True):
+        if full_name.startswith(pn):
+            base_name = pn
+            if len(full_name) > len(pn): form_name = full_name[len(pn)+1:]
+            break
+    pid = str(p.index(base_name) + 1)
     is_s = random.randint(1, c.get("shiny_chance", 4096)) == 1
-    print(get_sprite(n, False, is_s))
-    
     now = get_now_str()
-    if pid not in db["captured"]: 
-        db["captured"][pid] = {"normal": True, "shiny": is_s, "encounters": 1, "first_date": now}
-    else:
-        entry = db["captured"][pid]
-        entry["encounters"] = entry.get("encounters", 1) + 1
-        if "first_date" not in entry: entry["first_date"] = now
-        if is_s: entry["shiny"] = True
-        entry["normal"] = True
+    if pid not in db["captured"]: db["captured"][pid] = {"forms": {}, "encounters": 0, "first_date": now}
+    entry = db["captured"][pid]
+    entry["encounters"] = entry.get("encounters", 0) + 1
+    if form_name not in entry["forms"]: entry["forms"][form_name] = {"normal": False, "shiny": False}
+    if is_s: 
+        entry["forms"][form_name]["shiny"] = True
+        print(f"(WOW! A shiny {full_name} appeared!)")
+    else: 
+        entry["forms"][form_name]["normal"] = True
     put_db(db)
 
 @click.group(invoke_without_command=True)
@@ -269,20 +298,23 @@ def c_cmd(): catch_one()
 @cli.command()
 @click.argument('name')
 @click.option('--shiny', is_flag=True)
-def spawn(name, shiny):
+@click.option('--form', help="Specific form name")
+def spawn(name, shiny, form):
     db, p = get_db(), list_pokes()
     if name not in p: return print(f"Unknown: {name}")
+    if form:
+        avail = get_available_forms(name)
+        if form not in avail: return print(f"Invalid form '{form}'. Available: {', '.join(avail)}")
     pid = str(p.index(name) + 1)
     now = get_now_str()
-    if pid not in db["captured"]: 
-        db["captured"][pid] = {"normal": True, "shiny": shiny, "encounters": 1, "first_date": now}
-    else:
-        entry = db["captured"][pid]
-        entry["encounters"] = entry.get("encounters", 1) + 1
-        if "first_date" not in entry: entry["first_date"] = now
-        if shiny: entry["shiny"] = True
-        entry["normal"] = True
-    put_db(db); print(f"Caught {name} {'(shiny)' if shiny else ''}")
+    f_to_add = form if form else "base"
+    if pid not in db["captured"]: db["captured"][pid] = {"forms": {}, "encounters": 0, "first_date": now}
+    entry = db["captured"][pid]
+    entry["encounters"] = entry.get("encounters", 0) + 1
+    if f_to_add not in entry["forms"]: entry["forms"][f_to_add] = {"normal": False, "shiny": False}
+    if shiny: entry["forms"][f_to_add]["shiny"] = True
+    else: entry["forms"][f_to_add]["normal"] = True
+    put_db(db); print(f"Caught {name} {f'({form})' if form else ''} {'(shiny)' if shiny else ''}")
 
 @cli.command()
 def reset():
