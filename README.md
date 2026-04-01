@@ -21,7 +21,7 @@
 ## Installation and Configuration
 
 ### Prerequisites
-- [pokemon-colorscripts](https://github.com/phact/pokemon-colorscripts) must be installed.
+- [pokemon-colorscripts](https://gitlab.com/phoneybadger/pokemon-colorscripts) must be installed.
 - Python 3.x
 
 ### System Installation (Recommended)
@@ -48,7 +48,7 @@ To keep your system clean, the application uses the following paths:
 
 ## Credits
 
-This project is a dedicated add-on for the amazing [pokemon-colorscripts](https://github.com/phact/pokemon-colorscripts) by **phoneybadger**.
+This project is a dedicated add-on for the amazing [pokemon-colorscripts](https://gitlab.com/phoneybadger/pokemon-colorscripts) by **phoneybadger**.
 
 <hr>
 
