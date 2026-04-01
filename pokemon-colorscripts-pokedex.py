@@ -6,6 +6,8 @@ import random # rng
 import subprocess # shell
 import re # regex
 import webbrowser # links
+import locale # locale
+from datetime import datetime # time
 from pathlib import Path # paths
 
 import click # cli
@@ -60,6 +62,11 @@ def make_bar(cur, tot, width=60): # custom bar
     done = int((cur / tot) * width) # filled part
     return "|" + "█" * done + "░" * (width - done) + "|" # bar string
 
+def get_now_str(): # formatted date
+    try: locale.setlocale(locale.LC_TIME, "") # use user locale
+    except: pass
+    return datetime.now().strftime("%x") + "r" # locale date + r
+
 # # TUI COMPONENTS
 class PokeItem(ListItem): # list entry
     def __init__(self, idx, name, known): # init item
@@ -81,8 +88,11 @@ class DetailScr(Screen): # info screen
     def update_data(self): # refresh state
         self.p_name = self.p_pokes[self.p_idx] # current name
         self.p_pid = self.p_idx + 1 # current id
+        entry = self.p_db["captured"].get(str(self.p_pid), {}) # get entry
         self.p_known = str(self.p_pid) in self.p_db["captured"] # check capture
-        self.p_shiny = self.p_db["captured"].get(str(self.p_pid), {}).get("shiny", False) # check shiny
+        self.p_shiny = entry.get("shiny", False) # check shiny
+        self.p_encounters = entry.get("encounters", 0 if not self.p_known else 1) # count
+        self.p_first_date = entry.get("first_date", "00/00/0000r") # date
 
     def compose(self) -> ComposeResult: # build ui
         with ScrollableContainer(id="det-cont"): # scrollable
@@ -106,9 +116,10 @@ class DetailScr(Screen): # info screen
                 Static(shadow(get_sprite(self.p_name, True)), classes="sprite"),
                 classes="sprite-col"
             )
-            cont.mount(Horizontal(v, classes="sprite-row")) # Use class instead of ID
-            cont.mount(Static(f"ID: {self.p_pid:04d}", classes="info-id"))
+            cont.mount(Horizontal(v, classes="sprite-row"))
+            cont.mount(Static("", classes="spacer")) # spacer
             cont.mount(Static("???", classes="name-big"))
+            cont.mount(Static(f"ID: {self.p_pid:04d} | Encountered: {self.p_first_date} | Encounters: {self.p_encounters}", classes="info-stats"))
         else: # discovered
             cols = [] # children list
             cols.append(Vertical(
@@ -123,10 +134,11 @@ class DetailScr(Screen): # info screen
                     classes="sprite-col"
                 ))
             
-            cont.mount(Horizontal(*cols, classes="sprite-row")) # Use class instead of ID
+            cont.mount(Horizontal(*cols, classes="sprite-row"))
+            cont.mount(Static("", classes="spacer")) # spacer
             m_name = self.p_map.get(self.p_name, self.p_name.capitalize()) # name
-            cont.mount(Static(f"ID: {self.p_pid:04d}", classes="info-id"))
             cont.mount(Static(m_name, classes="name-big"))
+            cont.mount(Static(f"ID: {self.p_pid:04d} | Encountered: {self.p_first_date} | Encounters: {self.p_encounters}", classes="info-stats"))
 
     def action_back(self): self.app.pop_screen() # close
     def action_prev(self): # go prev
@@ -155,8 +167,9 @@ class Pokedex(App): # main app
     ListView { border: heavy white; width: 100%; height: 1fr; background: #1e1e1e; padding: 1 2; }
     ListItem { padding: 0 1; }
     ListItem:focus { background: #3a3a3a; text-style: bold; color: #ffffff; }
-    .name-big { text-style: bold underline; margin-bottom: 1; width: 100%; text-align: center; color: white; height: 3; content-align: center middle; }
-    .info-id { text-style: bold; width: 100%; text-align: center; color: white; margin-top: 1; }
+    .name-big { text-style: bold underline; margin-bottom: 1; width: 100%; text-align: center; color: white; height: 2; content-align: center middle; border-bottom: heavy white; }
+    .info-stats { text-style: bold; width: 100%; text-align: center; color: white; margin-top: 1; }
+    .spacer { height: 1; width: 100%; }
     .form-lbl { text-align: center; width: 100%; text-style: bold; color: white; margin-bottom: 1; }
     .sprite { border: heavy white; padding: 1; width: auto; height: auto; background: #1e1e1e; align: center middle; }
     .sprite-row { height: auto; align: center middle; width: 100%; background: transparent; }
@@ -165,13 +178,13 @@ class Pokedex(App): # main app
     #det-inner { align: center middle; width: 100%; height: auto; }
     #det-nav { height: 3; align: center middle; width: 100%; margin-top: 1; }
     #det-nav Button { margin: 0 1; border: heavy white; background: #1e1e1e; color: white; }
-    #back-row { height: 3; align: center middle; width: 100%; margin-bottom: 2; margin-top: 2; }
+    #back-row { height: 3; align: center middle; width: 100%; margin-bottom: 3; margin-top: 2; }
     #back-btn { border: heavy white; background: #1e1e1e; color: white; width: 30; }
     #prog-cont { height: 6; width: 100%; margin-bottom: 1; align: center middle; }
     #prog-pct { text-align: center; width: 100%; color: white; text-style: bold; }
     #prog-bar { text-align: center; width: 100%; color: white; }
     #prog-cnt { text-align: center; width: 100%; color: white; }
-    #foot-row { height: 3; width: 100%; align: center middle; }
+    #foot-row { height: 3; width: 100%; align: center middle; margin-bottom: 2; }
     .foot-btn { margin: 0 1; border: heavy white; background: #1e1e1e; color: white; }
     """
     BINDINGS = [("/", "find", "Search"), ("s", "sort", "Sort"), ("q", "quit", "Quit")]
@@ -183,10 +196,10 @@ class Pokedex(App): # main app
         with Container(id="main-wrap"):
             with Vertical(id="cont"):
                 yield Static("=== NATIONAL POKEDEX ===", id="header-lbl")
-                with Vertical(id="prog-cont"): # 3-line progress
-                    yield Static("", id="prog-pct") # line 1
-                    yield Static("", id="prog-bar") # line 2
-                    yield Static("", id="prog-cnt") # line 3
+                with Vertical(id="prog-cont"):
+                    yield Static("", id="prog-pct")
+                    yield Static("", id="prog-bar")
+                    yield Static("", id="prog-cnt")
                 yield Input(placeholder="Search ID/Name...", id="search")
                 with ScrollableContainer(): yield ListView(id="list")
                 with Horizontal(id="foot-row"):
@@ -212,7 +225,9 @@ class Pokedex(App): # main app
     @on(Input.Changed, "#search")
     def on_find(self, e): self.update_list(e.value)
     @on(ListView.Selected)
-    def on_pick(self, e): self.push_screen(DetailScr(e.item.p_idx, self.pokes, self.db, self.map))
+    def on_pick(self, e): 
+        self.db = get_db() # Refresh db before viewing
+        self.push_screen(DetailScr(e.item.p_idx, self.pokes, self.db, self.map))
     @on(Button.Pressed, "#btn-find")
     def action_find(self): self.query_one("#search").focus()
     @on(Button.Pressed, "#btn-sort")
@@ -229,9 +244,16 @@ def catch_one(): # random
     n = random.choice(p); pid = str(p.index(n) + 1)
     is_s = random.randint(1, c.get("shiny_chance", 4096)) == 1
     print(get_sprite(n, False, is_s))
-    if pid not in db["captured"]: db["captured"][pid] = {"normal": True, "shiny": False}
-    else: db["captured"][pid]["normal"] = True
-    if is_s: db["captured"][pid]["shiny"] = True
+    
+    now = get_now_str()
+    if pid not in db["captured"]: 
+        db["captured"][pid] = {"normal": True, "shiny": is_s, "encounters": 1, "first_date": now}
+    else:
+        entry = db["captured"][pid]
+        entry["encounters"] = entry.get("encounters", 1) + 1
+        if "first_date" not in entry: entry["first_date"] = now
+        if is_s: entry["shiny"] = True
+        entry["normal"] = True
     put_db(db)
 
 @click.group(invoke_without_command=True)
@@ -251,8 +273,15 @@ def spawn(name, shiny):
     db, p = get_db(), list_pokes()
     if name not in p: return print(f"Unknown: {name}")
     pid = str(p.index(name) + 1)
-    if pid not in db["captured"]: db["captured"][pid] = {"normal": True, "shiny": False}
-    if shiny: db["captured"][pid]["shiny"] = True
+    now = get_now_str()
+    if pid not in db["captured"]: 
+        db["captured"][pid] = {"normal": True, "shiny": shiny, "encounters": 1, "first_date": now}
+    else:
+        entry = db["captured"][pid]
+        entry["encounters"] = entry.get("encounters", 1) + 1
+        if "first_date" not in entry: entry["first_date"] = now
+        if shiny: entry["shiny"] = True
+        entry["normal"] = True
     put_db(db); print(f"Caught {name} {'(shiny)' if shiny else ''}")
 
 @cli.command()
