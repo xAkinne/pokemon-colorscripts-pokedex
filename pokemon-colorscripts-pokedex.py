@@ -56,9 +56,9 @@ def shadow(ansi): # make silhouette
     return '\n'.join([l if l.strip() else l for l in plain.split('\n')]) # raw blocks
 
 def make_bar(cur, tot, width=60): # custom bar
-    if tot == 0: return "[" + "░" * width + "]" # empty
+    if tot == 0: return "|" + "░" * width + "|" # empty
     done = int((cur / tot) * width) # filled part
-    return "[" + "█" * done + "░" * (width - done) + "]" # bar string
+    return "|" + "█" * done + "░" * (width - done) + "|" # bar string
 
 # # TUI COMPONENTS
 class PokeItem(ListItem): # list entry
@@ -91,7 +91,8 @@ class DetailScr(Screen): # info screen
             yield Button("< Prev", id="btn-prev")
             yield Button("Bulbapedia", id="bulb-btn")
             yield Button("Next >", id="btn-next")
-        yield Button("Back (ESC)", id="back-btn", variant="default") # bottom back
+        with Horizontal(id="back-row"): # centered back row
+            yield Button("Back (ESC)", id="back-btn")
 
     def on_mount(self): self.refresh_view() # first load
 
@@ -105,7 +106,7 @@ class DetailScr(Screen): # info screen
                 Static(shadow(get_sprite(self.p_name, True)), classes="sprite"),
                 classes="sprite-col"
             )
-            cont.mount(v)
+            cont.mount(Horizontal(v, classes="sprite-row")) # Use class instead of ID
             cont.mount(Static(f"ID: {self.p_pid:04d}", classes="info-id"))
             cont.mount(Static("???", classes="name-big"))
         else: # discovered
@@ -122,7 +123,7 @@ class DetailScr(Screen): # info screen
                     classes="sprite-col"
                 ))
             
-            cont.mount(Horizontal(*cols, id="sprite-row"))
+            cont.mount(Horizontal(*cols, classes="sprite-row")) # Use class instead of ID
             m_name = self.p_map.get(self.p_name, self.p_name.capitalize()) # name
             cont.mount(Static(f"ID: {self.p_pid:04d}", classes="info-id"))
             cont.mount(Static(m_name, classes="name-big"))
@@ -149,6 +150,7 @@ class Pokedex(App): # main app
     Screen { background: #121212; align: center middle; }
     #main-wrap { width: 84; height: 100%; }
     #cont { padding: 1; width: 100%; height: 100%; background: #121212; }
+    #header-lbl { text-align: center; width: 100%; text-style: bold; color: white; margin-bottom: 1; }
     #search { margin-bottom: 1; border: heavy white; width: 100%; background: #1e1e1e; color: white; }
     ListView { border: heavy white; width: 100%; height: 1fr; background: #1e1e1e; padding: 1 2; }
     ListItem { padding: 0 1; }
@@ -157,13 +159,14 @@ class Pokedex(App): # main app
     .info-id { text-style: bold; width: 100%; text-align: center; color: white; margin-top: 1; }
     .form-lbl { text-align: center; width: 100%; text-style: bold; color: white; margin-bottom: 1; }
     .sprite { border: heavy white; padding: 1; width: auto; height: auto; background: #1e1e1e; align: center middle; }
-    #sprite-row { height: auto; align: center middle; width: 100%; background: transparent; }
+    .sprite-row { height: auto; align: center middle; width: 100%; background: transparent; }
     .sprite-col { width: auto; align: center middle; height: auto; margin: 0 2; }
     #det-cont { height: 1fr; width: 100%; background: #121212; align: center middle; }
     #det-inner { align: center middle; width: 100%; height: auto; }
     #det-nav { height: 3; align: center middle; width: 100%; margin-top: 1; }
     #det-nav Button { margin: 0 1; border: heavy white; background: #1e1e1e; color: white; }
-    #back-btn { width: 100%; border: heavy white; background: #1e1e1e; color: white; margin-top: 1; }
+    #back-row { height: 3; align: center middle; width: 100%; margin-bottom: 2; margin-top: 2; }
+    #back-btn { border: heavy white; background: #1e1e1e; color: white; width: 30; }
     #prog-cont { height: 6; width: 100%; margin-bottom: 1; align: center middle; }
     #prog-pct { text-align: center; width: 100%; color: white; text-style: bold; }
     #prog-bar { text-align: center; width: 100%; color: white; }
@@ -179,10 +182,11 @@ class Pokedex(App): # main app
     def compose(self) -> ComposeResult: # build
         with Container(id="main-wrap"):
             with Vertical(id="cont"):
+                yield Static("=== NATIONAL POKEDEX ===", id="header-lbl")
                 with Vertical(id="prog-cont"): # 3-line progress
-                    yield Static("", id="prog-pct") # line 1: %
-                    yield Static("", id="prog-bar") # line 2: [###]
-                    yield Static("", id="prog-cnt") # line 3: xxx/xxx
+                    yield Static("", id="prog-pct") # line 1
+                    yield Static("", id="prog-bar") # line 2
+                    yield Static("", id="prog-cnt") # line 3
                 yield Input(placeholder="Search ID/Name...", id="search")
                 with ScrollableContainer(): yield ListView(id="list")
                 with Horizontal(id="foot-row"):
