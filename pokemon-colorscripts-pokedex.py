@@ -9,13 +9,11 @@ import webbrowser # links
 from pathlib import Path # paths
 
 import click # cli
-from rich.static import Static # rich ui
-from rich.text import Text # text ui
+from rich.text import Text # rich text
 from textual.app import App, ComposeResult # tui app
 from textual.containers import Container, Horizontal, Vertical, ScrollableContainer # layout
-from textual.widgets import Header, Footer, Input, ListItem, ListView, Static as TextualStatic, Button, ProgressBar # widgets
+from textual.widgets import Input, ListItem, ListView, Static, Button # widgets
 from textual.screen import Screen # screens
-from textual.binding import Binding # keys
 from textual import on # events
 
 # # PATHS & CONFIG
@@ -55,122 +53,209 @@ def get_sprite(name, big=False, shiny=False): # fetch sprite
 
 def shadow(ansi): # make silhouette
     plain = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])').sub('', ansi) # remove color
-    return '\n'.join(["\033[0m" + l + "\033[0m" if l.strip() else l for l in plain.split('\n')]) # reset colors
+    return '\n'.join([l if l.strip() else l for l in plain.split('\n')]) # raw blocks
+
+def make_bar(cur, tot, width=60): # custom bar
+    if tot == 0: return "[" + "░" * width + "]" # empty
+    done = int((cur / tot) * width) # filled part
+    return "[" + "█" * done + "░" * (width - done) + "]" # bar string
 
 # # TUI COMPONENTS
 class PokeItem(ListItem): # list entry
-    def __init__(self, pid, name, known): # init item
+    def __init__(self, idx, name, known): # init item
         super().__init__()
-        self.pid, self.name, self.known = pid, name, known # store data
-    def compose(self) -> ComposeResult: yield TextualStatic(f"{int(self.pid):04d}: {self.name if self.known else '???'}") # display
+        self.p_idx, self.p_name, self.p_known = idx, name, known # store data
+    def compose(self) -> ComposeResult: yield Static(f" {self.p_idx+1:04d}: {self.p_name if self.p_known else '???'}") # display
 
 class DetailScr(Screen): # info screen
-    BINDINGS = [("escape", "back", "Back")] # back key
-    def __init__(self, pid, name, db, map_data): # init details
+    BINDINGS = [
+        ("escape", "back", "Back"),
+        ("left", "prev", "Prev"),
+        ("right", "next", "Next")
+    ]
+    def __init__(self, idx, pokes, db, map_data): # init details
         super().__init__()
-        self.pid, self.name, self.db, self.map = pid, name, db, map_data # data
-        self.known = str(pid) in db["captured"] # check capture
-        self.shiny = db["captured"].get(str(pid), {}).get("shiny", False) # check shiny
+        self.p_idx, self.p_pokes, self.p_db, self.p_map = idx, pokes, db, map_data # data
+        self.update_data() # init state
+
+    def update_data(self): # refresh state
+        self.p_name = self.p_pokes[self.p_idx] # current name
+        self.p_pid = self.p_idx + 1 # current id
+        self.p_known = str(self.p_pid) in self.p_db["captured"] # check capture
+        self.p_shiny = self.p_db["captured"].get(str(self.p_pid), {}).get("shiny", False) # check shiny
+
     def compose(self) -> ComposeResult: # build ui
-        yield Header() # top
         with ScrollableContainer(id="det-cont"): # scrollable
-            if not self.known: # unknown
-                yield TextualStatic(shadow(get_sprite(self.name, True)), classes="sprite") # silhouette
-                yield TextualStatic(f"ID: {int(self.pid):04d} | Name: ???", classes="info") # hidden info
-                yield Button("Bulbapedia", disabled=True) # no link
-            else: # discovered
-                with Horizontal(classes="row"): # sprites
-                    yield TextualStatic(get_sprite(self.name, True), classes="sprite") # normal
-                    if self.shiny: yield TextualStatic(get_sprite(self.name, True, True), classes="sprite") # shiny
-                m_name = self.map.get(self.name, self.name.capitalize()) # map name
-                yield TextualStatic(f"ID: {int(self.pid):04d} | Name: {m_name}", classes="info") # info
-                yield Button("Bulbapedia", id="bulb-btn", variant="primary") # link
-        yield Footer() # bottom
+            yield Vertical(id="det-inner") # wrapper
+        with Horizontal(id="det-nav"): # nav row
+            yield Button("< Prev", id="btn-prev")
+            yield Button("Bulbapedia", id="bulb-btn")
+            yield Button("Next >", id="btn-next")
+        yield Button("Back (ESC)", id="back-btn", variant="default") # bottom back
+
+    def on_mount(self): self.refresh_view() # first load
+
+    def refresh_view(self): # update content
+        cont = self.query_one("#det-inner", Vertical)
+        for child in list(cont.children): child.remove() # manual clear
+        
+        if not self.p_known: # unknown
+            v = Vertical(
+                Static("Base Form", classes="form-lbl"),
+                Static(shadow(get_sprite(self.p_name, True)), classes="sprite"),
+                classes="sprite-col"
+            )
+            cont.mount(v)
+            cont.mount(Static(f"ID: {self.p_pid:04d}", classes="info-id"))
+            cont.mount(Static("???", classes="name-big"))
+        else: # discovered
+            cols = [] # children list
+            cols.append(Vertical(
+                Static("Base Form", classes="form-lbl"),
+                Static(Text.from_ansi(get_sprite(self.p_name, True)), classes="sprite"),
+                classes="sprite-col"
+            ))
+            if self.p_shiny: # add shiny
+                cols.append(Vertical(
+                    Static("Shiny Form", classes="form-lbl"),
+                    Static(Text.from_ansi(get_sprite(self.p_name, True, True)), classes="sprite"),
+                    classes="sprite-col"
+                ))
+            
+            cont.mount(Horizontal(*cols, id="sprite-row"))
+            m_name = self.p_map.get(self.p_name, self.p_name.capitalize()) # name
+            cont.mount(Static(f"ID: {self.p_pid:04d}", classes="info-id"))
+            cont.mount(Static(m_name, classes="name-big"))
+
     def action_back(self): self.app.pop_screen() # close
+    def action_prev(self): # go prev
+        self.p_idx = (self.p_idx - 1) % len(self.p_pokes); self.update_data(); self.refresh_view()
+    def action_next(self): # go next
+        self.p_idx = (self.p_idx + 1) % len(self.p_pokes); self.update_data(); self.refresh_view()
+
+    @on(Button.Pressed, "#back-btn")
+    def on_back_click(self): self.action_back()
+    @on(Button.Pressed, "#btn-prev")
+    def on_prev_click(self): self.action_prev()
+    @on(Button.Pressed, "#btn-next")
+    def on_next_click(self): self.action_next()
     @on(Button.Pressed, "#bulb-btn")
     def open_link(self): # open web
-        n = self.map.get(self.name, self.name.capitalize()).replace(" ", "_") # format name
-        webbrowser.open(f"https://bulbapedia.bulbagarden.net/wiki/{n}_(Pok%C3%A9mon)") # go
+        n = self.p_map.get(self.p_name, self.p_name.capitalize()).replace(" ", "_")
+        webbrowser.open(f"https://bulbapedia.bulbagarden.net/wiki/{n}_(Pok%C3%A9mon)")
 
 class Pokedex(App): # main app
     CSS = """
-    #cont { padding: 1; } # main padding
-    #search { margin-bottom: 1; } # input margin
-    .info { font-weight: bold; margin: 1; } # text style
-    .sprite { border: solid green; padding: 1; width: auto; height: auto; } # box
-    .row { height: auto; align: center middle; } # alignment
-    #det-cont { align: center middle; text-align: center; } # detail align
-    #prog-cont { height: 3; margin-bottom: 1; } # bar size
-    #prog-lbl { text-align: center; width: 100%; } # label align
+    Screen { background: #121212; align: center middle; }
+    #main-wrap { width: 84; height: 100%; }
+    #cont { padding: 1; width: 100%; height: 100%; background: #121212; }
+    #search { margin-bottom: 1; border: heavy white; width: 100%; background: #1e1e1e; color: white; }
+    ListView { border: heavy white; width: 100%; height: 1fr; background: #1e1e1e; padding: 1 2; }
+    ListItem { padding: 0 1; }
+    ListItem:focus { background: #3a3a3a; text-style: bold; color: #ffffff; }
+    .name-big { text-style: bold underline; margin-bottom: 1; width: 100%; text-align: center; color: white; height: 3; content-align: center middle; }
+    .info-id { text-style: bold; width: 100%; text-align: center; color: white; margin-top: 1; }
+    .form-lbl { text-align: center; width: 100%; text-style: bold; color: white; margin-bottom: 1; }
+    .sprite { border: heavy white; padding: 1; width: auto; height: auto; background: #1e1e1e; align: center middle; }
+    #sprite-row { height: auto; align: center middle; width: 100%; background: transparent; }
+    .sprite-col { width: auto; align: center middle; height: auto; margin: 0 2; }
+    #det-cont { height: 1fr; width: 100%; background: #121212; align: center middle; }
+    #det-inner { align: center middle; width: 100%; height: auto; }
+    #det-nav { height: 3; align: center middle; width: 100%; margin-top: 1; }
+    #det-nav Button { margin: 0 1; border: heavy white; background: #1e1e1e; color: white; }
+    #back-btn { width: 100%; border: heavy white; background: #1e1e1e; color: white; margin-top: 1; }
+    #prog-cont { height: 6; width: 100%; margin-bottom: 1; align: center middle; }
+    #prog-pct { text-align: center; width: 100%; color: white; text-style: bold; }
+    #prog-bar { text-align: center; width: 100%; color: white; }
+    #prog-cnt { text-align: center; width: 100%; color: white; }
+    #foot-row { height: 3; width: 100%; align: center middle; }
+    .foot-btn { margin: 0 1; border: heavy white; background: #1e1e1e; color: white; }
     """
-    BINDINGS = [("/", "find", "Search"), ("q", "quit", "Quit")] # hotkeys
-    def __init__(self): # init app
+    BINDINGS = [("/", "find", "Search"), ("s", "sort", "Sort"), ("q", "quit", "Quit")]
+    def __init__(self): # init
         super().__init__()
-        self.pokes, self.db, self.map = list_pokes(), get_db(), get_map() # load all
-    def compose(self) -> ComposeResult: # main ui
-        yield Header() # top
-        with Container(id="cont"): # wrap
-            with Vertical(id="prog-cont"): # progress
-                yield TextualStatic("", id="prog-lbl") # text
-                yield ProgressBar(total=len(self.pokes), id="bar") # visual
-            yield Input(placeholder="Search ID/Name...", id="search") # search
-            with ScrollableContainer(): yield ListView(id="list") # results
-        yield Footer() # bottom
-    def on_mount(self): self.refresh(); self.up_prog() # start ui
-    def refresh(self, query=""): # filter list
-        lv = self.query_one("#list", ListView); lv.clear() # clear current
-        for i, n in enumerate(self.pokes): # scan all
-            pid = i + 1; known = str(pid) in self.db["captured"] # state
-            if not query or query.isdigit() and query in str(pid) or query.lower() in n.lower(): # filter
-                lv.append(PokeItem(str(pid), n, known)) # add match
-    def up_prog(self): # update bar
-        got, tot = len(self.db["captured"]), len(self.pokes) # counts
-        pct = (got/tot*100) if tot > 0 else 0 # percent
-        self.query_one("#prog-lbl", TextualStatic).update(f"{got}/{tot} ({pct:.1f}%)") # label
-        self.query_one("#bar", ProgressBar).progress = got # bar
+        self.pokes, self.db, self.map = list_pokes(), get_db(), get_map()
+        self.sort_mode = "id"
+    def compose(self) -> ComposeResult: # build
+        with Container(id="main-wrap"):
+            with Vertical(id="cont"):
+                with Vertical(id="prog-cont"): # 3-line progress
+                    yield Static("", id="prog-pct") # line 1: %
+                    yield Static("", id="prog-bar") # line 2: [###]
+                    yield Static("", id="prog-cnt") # line 3: xxx/xxx
+                yield Input(placeholder="Search ID/Name...", id="search")
+                with ScrollableContainer(): yield ListView(id="list")
+                with Horizontal(id="foot-row"):
+                    yield Button("Search (/)", id="btn-find", classes="foot-btn")
+                    yield Button("Sort (S)", id="btn-sort", classes="foot-btn")
+                    yield Button("Quit (Q)", id="btn-quit", classes="foot-btn")
+    def on_mount(self): self.update_list(); self.up_prog()
+    def update_list(self, query=""): # filter
+        lv = self.query_one("#list", ListView); lv.clear()
+        items = []
+        for i, n in enumerate(self.pokes):
+            known = str(i+1) in self.db["captured"]
+            if not query or query.isdigit() and query in str(i+1) or query.lower() in n.lower():
+                items.append((i, n, known))
+        if self.sort_mode == "known": items.sort(key=lambda x: (not x[2], x[0]))
+        for i, n, known in items: lv.append(PokeItem(i, n, known))
+    def up_prog(self): # stats
+        got, tot = len(self.db["captured"]), len(self.pokes)
+        pct = (got/tot*100) if tot > 0 else 0
+        self.query_one("#prog-pct", Static).update(f"{pct:.1f}%")
+        self.query_one("#prog-bar", Static).update(make_bar(got, tot, 60))
+        self.query_one("#prog-cnt", Static).update(f"{got}/{tot}")
     @on(Input.Changed, "#search")
-    def on_find(self, e): self.refresh(e.value) # auto search
+    def on_find(self, e): self.update_list(e.value)
     @on(ListView.Selected)
-    def on_pick(self, e): self.push_screen(DetailScr(e.item.pid, e.item.name, self.db, self.map)) # show details
-    def action_find(self): self.query_one("#search").focus() # focus bar
+    def on_pick(self, e): self.push_screen(DetailScr(e.item.p_idx, self.pokes, self.db, self.map))
+    @on(Button.Pressed, "#btn-find")
+    def action_find(self): self.query_one("#search").focus()
+    @on(Button.Pressed, "#btn-sort")
+    def action_sort(self):
+        self.sort_mode = "known" if self.sort_mode == "id" else "id"
+        self.update_list(self.query_one("#search").value)
+    @on(Button.Pressed, "#btn-quit")
+    def action_quit(self): self.exit()
 
 # # CLI
-def catch_one(): # random capture
-    c, db, p = get_conf(), get_db(), list_pokes() # load data
-    if not p: return # no list
-    n = random.choice(p); pid = str(p.index(n) + 1) # pick one
-    is_s = random.randint(1, c.get("shiny_chance", 4096)) == 1 # rng shiny
-    print(get_sprite(n, False, is_s)) # show sprite
-    if pid not in db["captured"]: db["captured"][pid] = {"normal": True, "shiny": False} # new catch
-    if is_s: db["captured"][pid]["shiny"] = True # mark shiny
-    put_db(db) # save
+def catch_one(): # random
+    c, db, p = get_conf(), get_db(), list_pokes()
+    if not p: return
+    n = random.choice(p); pid = str(p.index(n) + 1)
+    is_s = random.randint(1, c.get("shiny_chance", 4096)) == 1
+    print(get_sprite(n, False, is_s))
+    if pid not in db["captured"]: db["captured"][pid] = {"normal": True, "shiny": False}
+    else: db["captured"][pid]["normal"] = True
+    if is_s: db["captured"][pid]["shiny"] = True
+    put_db(db)
 
-@click.group(invoke_without_command=True) # cli root
+@click.group(invoke_without_command=True)
 @click.pass_context
-def cli(ctx): # entry point
-    if ctx.invoked_subcommand is None: # no args
-        if len(sys.argv) > 1 and sys.argv[1] in ["-c", "--catch"]: catch_one() # handle flag
-        else: Pokedex().run() # run tui
+def cli(ctx):
+    if ctx.invoked_subcommand is None:
+        if len(sys.argv) > 1 and sys.argv[1] in ["-c", "--catch"]: catch_one()
+        else: Pokedex().run()
 
-@cli.command(name="catch") # catch cmd
-def c_cmd(): catch_one() # run catch
+@cli.command(name="catch")
+def c_cmd(): catch_one()
 
-@cli.command() # debug spawn
-@click.argument('name') # poke name
-@click.option('--shiny', is_flag=True) # shiny flag
-def spawn(name, shiny): # add manual
-    db, p = get_db(), list_pokes() # load
-    if name not in p: return print(f"Unknown: {name}") # check
-    pid = str(p.index(name) + 1) # get id
-    if pid not in db["captured"]: db["captured"][pid] = {"normal": True, "shiny": False} # init
-    if shiny: db["captured"][pid]["shiny"] = True # set shiny
-    put_db(db); print(f"Caught {name} {'(shiny)' if shiny else ''}") # done
+@cli.command()
+@click.argument('name')
+@click.option('--shiny', is_flag=True)
+def spawn(name, shiny):
+    db, p = get_db(), list_pokes()
+    if name not in p: return print(f"Unknown: {name}")
+    pid = str(p.index(name) + 1)
+    if pid not in db["captured"]: db["captured"][pid] = {"normal": True, "shiny": False}
+    if shiny: db["captured"][pid]["shiny"] = True
+    put_db(db); print(f"Caught {name} {'(shiny)' if shiny else ''}")
 
-@cli.command() # clear data
-def reset(): # wipe db
-    c = get_conf(); p = c.get("confirm_phrase", "RESET MY POKEDEX") # get phrase
-    if input(f"Type '{p}' to confirm: ") == p: # check
-        put_db({"captured": {}}); print("Wiped.") # reset
-    else: print("Abort.") # cancel
+@cli.command()
+def reset():
+    c = get_conf(); p = c.get("confirm_phrase", "RESET MY POKEDEX")
+    if input(f"Type '{p}' to confirm: ") == p:
+        put_db({"captured": {}}); print("Wiped.")
+    else: print("Abort.")
 
-if __name__ == "__main__": cli() # run
+if __name__ == "__main__": cli()
